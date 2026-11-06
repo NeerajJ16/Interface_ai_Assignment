@@ -192,17 +192,20 @@ def text_chunks(pv, snap_i):
 
 TIER = re.compile(r"\$[\d,.]+(?:\s*[-\u2013]\s*\$?[\d,.]+)?\+?|or less")
 
+GENERIC_HEADING = {"account", "accounts", "certificate", "certificates", "rate", "rates", "business"}
+
 def fact_key(c, bands: dict, tier: bool = True):
     """Identity of a fact row across pages and snapshots: product + program/tier + audience."""
     base = re.sub(r"\baccounts?\b", "", c.heading, flags=re.I).strip()
     label = c.label if tier else TIER.sub("", c.label)
     if base:
-        label = re.sub(re.escape(base), "", label, flags=re.I)
+        label = re.sub(r"^\s*" + re.escape(base) + r"\s*[,:-]?\s*", "", label, flags=re.I)
     m = RE_RANGE_YEARS.search(label)
     if m:
         label = label.replace(m.group(0), f"BAND{bands.get(m.group(0), 0)}")
     alpha = len(re.findall(r"[A-Za-z]{3,}", label))
-    hk = re.sub(r"[^a-z]", "", base.lower()) if alpha <= 2 else ""
+    core = [w for w in re.findall(r"[a-z]+", base.lower()) if w not in GENERIC_HEADING]
+    hk = core[0] if core and alpha <= 2 else ""
     aud = "biz" if "/business" in c.url or "business" in c.heading.lower() else "per"
     return (re.sub(r"[^a-z0-9]", "", label.lower()), hk, aud)
 
