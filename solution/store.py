@@ -18,22 +18,22 @@ def clean(text: str) -> str:
 
 @dataclass
 class Table:
-    heading: str                 # nearest non-table line above the table (section label)
-    header: list                 # column names
-    rows: list                   # list of dicts {column: cell}
-    context: str = ""            # a few lines of text above, for product naming
+    heading: str                 
+    header: list                
+    rows: list                   
+    context: str = ""            
 
 
 @dataclass
 class PageVersion:
     url: str
     snapshot_id: str
-    taken_on: str                # snapshot date (ISO)
-    fetched_at: str              # when this page copy was really downloaded
+    taken_on: str                
+    fetched_at: str              
     title: str
-    text: str                    # cleaned markdown
+    text: str                    
     authority: int
-    carried_forward: bool        # page copy older than the snapshot => likely stale
+    carried_forward: bool        
     tables: list = field(default_factory=list)
 
 
@@ -41,20 +41,20 @@ def authority(url: str) -> int:
     """How much we trust a URL as the source of a *current* fact (0-100)."""
     path = url.split("dupaco.com", 1)[-1].split("#")[0].split("?")[0].rstrip("/")
     if path in ("/rates", "/business-rates"):
-        return 100                                   # the master rate sheets
+        return 100                                  
     if path.startswith(("/personal", "/business/")) and "/resources/" not in path:
-        return 80                                    # official product pages
+        return 80                                   
     if path in ("", "/contact", "/membership", "/about") or path.startswith("/about"):
-        return 70                                    # core company pages
+        return 70                                   
     if path.startswith("/calculators") or "calculator" in path:
-        return 35                                    # calculators are often never updated
+        return 35                                   
     if path.startswith("/newsroom") or re.match(r"^/(19|20)\d\d/", path):
-        return 20                                    # press releases / blog posts age badly
+        return 20                                  
     if path.startswith("/learn") or "/resources/" in path:
         return 15
     if path.startswith("/hubfs"):
-        return 10                                    # PDFs and files
-    return 50                                        # landing pages, promos, misc
+        return 10                                    
+    return 50                                       
 
 
 _SEP = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$")

@@ -1,37 +1,49 @@
-"""Step 1: versioned store + table parsing. answer() is still the naive paragraph match
-(over the store's newest pages) so the scorer keeps running while we build the real thing."""
-import re
+"""Knowledge system: versioned snapshots -> chunk index per snapshot -> qualifier-aware answers."""
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(next(d / "harness" for d in HERE.parents if (d / "harness" / "contract.py").exists())))
-from contract import Answer, Conflict, Snapshot, Source  # noqa: E402
-from store import Store  # noqa: E402
-
-WORD = re.compile(r"[a-z0-9$%.]+")
+from contract import Answer, Conflict, Snapshot, Source  
+from engine import REFUSAL, attempt  
+from index import SnapshotIndex, row_chunk, text_chunks  
+from store import Store  
 
 
 class KnowledgeSystem:
     def __init__(self):
         self.store = Store()
+        self.indexes = []        
 
     def ingest(self, snapshot: Snapshot) -> None:
         self.store.add_snapshot(snapshot)
+        si = len(self.indexes)
+        idx = SnapshotIndex(snapshot.snapshot_id, snapshot.taken_on)
+        for url, versions in self.store.versions.items():
+            pv = versions[-1]
+            if pv.snapshot_id != snapshot.snapshot_id:
+                continue
+            idx.chunks.extend(text_chunks(pv, si))
+            for ti, t in enumerate(pv.tables):
+                for ri, row in enumerate(t.rows):
+                    idx.chunks.append(row_chunk(pv, si, t, ti, ri, row))
+        idx.finalize()
+        self.indexes.append(idx)
+
+    def _targets(self, as_of):
+        """Snapshots to search, best first: newest on/before as_of, then progressively older."""
+        idxs = [i for i in self.indexes if not as_of or i.taken_on <= as_of]
+        return list(reversed(idxs))
 
     def answer(self, question, as_of=None):
-        q = set(WORD.findall(question.lower()))
-        best, best_score = None, 0
-        for url, pv in self.store.as_of(as_of).items():
-            for para in pv.text.split("\n\n"):
-                s = len(q & set(WORD.findall(para.lower())))
-                if s > best_score:
-                    best, best_score = (url, pv.snapshot_id, para.strip()), s
-        if not best:
-            return Answer(text="I don't know.", confident=False)
-        url, sid, para = best
-        return Answer(text=para[:600], sources=[Source(url=url, snapshot_id=sid)])
+        for idx in self._targets(as_of):
+            res = attempt(idx, question)
+            if res:
+                text, urls, _ = res
+                return Answer(text=text, sources=[Source(url=u, snapshot_id=idx.snap_id) for u in urls])
+            break      
+        return Answer(text=REFUSAL, confident=False)
 
     def conflicts(self):
         return []
