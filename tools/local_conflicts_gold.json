@@ -1,0 +1,6 @@
+[
+ {"id":"auto60","topic_keywords":["60 months","auto"],"values":["5.34%","5.39%"],"correct_value":"5.39%"},
+ {"id":"jumbo10","topic_keywords":["10 month","jumbo"],"values":["3.90%","4.00%"],"correct_value":"4.00%"},
+ {"id":"mort30","topic_keywords":["30-year","purchase"],"values":["6.037%","7.25%"],"correct_value":"7.25%"},
+ {"id":"branches","topic_keywords":["branch"],"values":["22","24"],"correct_value":"22"}
+]

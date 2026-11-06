@@ -1,9 +1,7 @@
-"""Every page of every snapshot is cut into chunks: one per table ROW (with its section heading,
-so tiers stay attached to their product) and one per text paragraph. A question is matched
+"""Chunk index + qualifier-aware retrieval.Every page of every snapshot is cut into chunks: one per table ROW (with its section heading,so tiers stay attached to their product) and one per text paragraph. A question is matched
 against the chunks of ONE snapshot (the newest, or the newest one on/before `as_of`).
 """
 from __future__ import annotations
-
 import math
 import re
 from collections import defaultdict
@@ -11,21 +9,18 @@ from dataclasses import dataclass, field
 
 #text normalisation
 _FOOT_PCT = re.compile(r"(\d%)\d\b")                  
-_FOOT_LBL = re.compile(r"\b(APR|APY)\d\b")           
-_FOOT_HDR = re.compile(r"(?<=[A-Za-z\)])\d$")        
-
+_FOOT_LBL = re.compile(r"\b(APR|APY)\d\b")            
+_FOOT_HDR = re.compile(r"(?<=[A-Za-z\)])\d$")         
 
 def tidy(s: str) -> str:
     s = _FOOT_PCT.sub(r"\1", s)
     s = _FOOT_LBL.sub(r"\1", s)
     return s.strip()
 
-
 def tidy_header(h: str) -> str:
     h = _FOOT_HDR.sub("", h.strip())
     h = h.replace("Annual Percentage Yield (APY)", "APY").replace("Annual Percentage Rate", "APR")
     return h.replace("(As Low As)", "(as low as)").strip()
-
 
 _WORD = re.compile(r"[a-z0-9]+(?:[.,][0-9]+)*")
 STOP = set("""a an the is are was were be been do does did can could would should will you your yours i me my we our us
@@ -33,7 +28,7 @@ it its this that these those of to in on at for from by with about as and or but
 how when where why there here have has had get give tell show want like need know please any some all just also
 than into over under per not no yes more most very much many current currently right now today latest new
 dupaco union rate rates apr apy interest dividend percent percentage yield annual offer offers offered
-available option options use used using up highest lowest best top maximum minimum provide between earn charge""".split())
+available option options use used using up highest lowest best top maximum minimum provide between earn charge receive received""".split())
 
 # query word -> acceptable chunk words
 SYN = {
@@ -46,25 +41,30 @@ SYN = {
     "lobby": {"lobby"}, "hours": {"hours", "hour"},
 }
 
+_Z = (("ition", "ize"), ("izing", "ize"), ("ized", "ize"), ("izes", "ize"), ("ization", "ize"))
 
 def stem(w: str) -> str:
+    if w in STOP:
+        return w
+    if len(w) > 4 and re.search(r"(ch|sh|x|ss|z)es$", w):
+        return w[:-2]                                   
+    for suf, rep in _Z:
+        if len(w) > len(suf) + 3 and w.endswith(suf):
+            return w[: -len(suf)] + rep
     if len(w) > 4 and w.endswith("ies"):
         return w[:-3] + "y"
     if len(w) > 3 and w.endswith("s") and not w.endswith("ss"):
         return w[:-1]
     return w
 
-
 def words(text: str) -> list:
     return [stem(w.strip(".,")) for w in _WORD.findall(text.lower())]
-
 
 def bigrams(text: str) -> frozenset:
     w = [t for t in words(text) if t not in STOP]
     return frozenset(zip(w, w[1:]))
 
-
-# ---------------------------------------------------------------- qualifiers
+#qualifiers
 _AMT = r"\$\s*([\d,]+(?:\.\d+)?)"
 RE_MONTHS = re.compile(r"(?<![\d.])(\d{1,3})\s*[- ]?\s*(?:months?|mos?)\b", re.I)
 RE_YEARS = re.compile(r"(?<![\d.])(\d{1,2})\s*[- ]?\s*(?:year|yr)\b", re.I)
@@ -74,10 +74,8 @@ RE_TIER_RANGE = re.compile(_AMT + r"\s*[-–]\s*\$?\s*([\d,]+(?:\.\d+)?)")
 RE_TIER_PLUS = re.compile(_AMT + r"\s*\+")
 RE_TIER_LESS = re.compile(_AMT + r"\s*(?:or less|and under)", re.I)
 
-
 def _f(x: str) -> float:
     return float(x.replace(",", ""))
-
 
 @dataclass
 class Quals:
@@ -86,7 +84,6 @@ class Quals:
     model: set = field(default_factory=set)
     amounts: list = field(default_factory=list)
 
-
 def parse_quals(q: str) -> Quals:
     out = Quals()
     out.months = {int(m) for m in RE_MONTHS.findall(q)}
@@ -94,7 +91,6 @@ def parse_quals(q: str) -> Quals:
     out.model = {int(m) for m in RE_MODEL.findall(q)}
     out.amounts = sorted(_f(m) for m in re.findall(_AMT, q))
     return out
-
 
 def tier_of(label: str):
     """(lo, hi) balance / loan-amount tier named in a row label, else None."""
@@ -109,7 +105,6 @@ def tier_of(label: str):
         return (0.0, _f(m.group(1)))
     return None
 
-
 def model_range(label: str):
     m = RE_RANGE_YEARS.search(label)
     if not m:
@@ -118,10 +113,16 @@ def model_range(label: str):
     b = int(b) if len(b) == 4 else int(m.group(1)[:2] + b)
     return (min(a, b), max(a, b))
 
-
 #chunks
 RATE_HDR = re.compile(r"rate|apr|apy|yield|point|payment|min\.", re.I)
 
+MONTHS = {m: i for i, m in enumerate("January February March April May June July August September October November December".split(), 1)}
+RE_PUBDATE = re.compile(r"\b(" + "|".join(MONTHS) + r")\s+(\d{1,2}),\s+(20\d\d)\b")
+
+def pub_date(text: str) -> str:
+    """ISO date of a dated article (first 'Month DD, YYYY' near the top), else ''."""
+    m = RE_PUBDATE.search(text[:700])
+    return f"{m.group(3)}-{MONTHS[m.group(1)]:02d}-{int(m.group(2)):02d}" if m else ""
 
 @dataclass
 class Chunk:
@@ -138,7 +139,7 @@ class Chunk:
     metrics: str = ""          
     order: int = 0
     bis: frozenset = frozenset()
-
+    pub: str = ""               
 
 def row_chunk(pv, snap_i, t, ti, ri, row) -> Chunk:
     label_parts, metric_parts = [], []
@@ -168,6 +169,7 @@ def text_chunks(pv, snap_i):
     prose = "\n".join(l for l in pv.text.split("\n") if not l.lstrip().startswith("|"))
     out, order = [], 0
     pageword = pv.url.split("dupaco.com")[-1].replace("-", " ").replace("/", " ")
+    pub = pub_date(pv.text)
     for para in re.split(r"\n\s*\n", prose):
         units = []
         for line in para.split("\n"):
@@ -189,15 +191,13 @@ def text_chunks(pv, snap_i):
                 continue
             toks = frozenset(words(f"{p} {pageword} {pv.title}"))
             out.append(Chunk("text", pv.url, snap_i, p, toks, pv.authority, pv.carried_forward,
-                             order=order, bis=bigrams(p)))
+                             order=order, bis=bigrams(p), pub=pub))
             order += 1
     return out
-
 
 def row_key(heading: str, label: str) -> str:
     """Identity of a fact row regardless of page: product + program/tier, punctuation-free."""
     return re.sub(r"[^a-z0-9]", "", f"{label}".lower())
-
 
 class SnapshotIndex:
     def __init__(self, snap_id, taken_on):
@@ -205,6 +205,7 @@ class SnapshotIndex:
         self.chunks = []
         self.tables = defaultdict(list)     
         self.same_row = defaultdict(list)   
+        self.page_text = defaultdict(list)  
         self.idf = {}
 
     def finalize(self):
@@ -215,6 +216,8 @@ class SnapshotIndex:
         n = max(len(self.chunks), 1)
         self.idf = {t: math.log(1 + n / d) for t, d in df.items()}
         for c in self.chunks:
+            if c.kind == "text":
+                self.page_text[c.url].append(c.text)
             if c.kind == "row":
                 self.tables[c.table_id].append(c)
                 self.same_row[row_key(c.heading, c.label)].append(c)

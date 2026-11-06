@@ -1,5 +1,4 @@
-"""Debug helper: python tools/inspect_store.py <url-substring> [snapshot-substring]
-Loads all snapshots and prints parsed tables for matching pages (run from kit root)."""
+"""Debug helper: python tools/inspect_store.py <url-substring> [snapshot-substring]"""
 import json, sys
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
@@ -10,8 +9,8 @@ from store import Store
 def load():
     st = Store()
     for d in sorted((ROOT / "snapshots").glob("0*/")):
-        m = json.load(open(d / "manifest.json"))
-        pages = [Page(url=p["url"], title=p["title"], markdown=(d / p["file"]).read_text(), fetched_at=p["fetched_at"]) for p in m["pages"]]
+        m = json.load(open(d / "manifest.json", encoding="utf-8"))
+        pages = [Page(url=p["url"], title=p["title"], markdown=(d / p["file"]).read_text(encoding="utf-8"), fetched_at=p["fetched_at"]) for p in m["pages"]]
         st.add_snapshot(Snapshot(snapshot_id=m["snapshot_id"], taken_on=m["taken_on"], pages=pages))
     return st
 

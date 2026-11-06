@@ -11,7 +11,7 @@ from index import (row_key, RE_MODEL, RE_MONTHS, RE_YEARS, STOP, SYN, Chunk, Sna
 RATE_WORDS = re.compile(r"\b(rates?|apr|apy|interest|dividends?|percent|percentage)\b", re.I)
 RE_ROW_MONTHS = re.compile(r"(?<![\d.])(\d{1,3})\s*[- ]?\s*(?:months?|mos?)\b", re.I)
 RE_ROW_YEARS = re.compile(r"(?<![\d.])(\d{1,2})\s*[- ]?\s*(?:year|yr)\b", re.I)
-ACCEPT = 0.50            # minimum share of the question's distinctive words a chunk must cover
+ACCEPT = 0.50            
 REFUSAL = ("I don't know - that isn't listed on the Dupaco website. "
            "Please contact Dupaco directly or visit a branch for help.")
 
@@ -72,8 +72,12 @@ def required_evidence(question: str):
         need.append(STREET)
     if re.search(r"\b(link|url|website|web address|site)\b", q):
         need.append(URLISH)
-    if re.search(r"\b(routing|phone|call)\b", q) or re.search(r"\bhow many\b", q):
+    if re.search(r"\b(routing|phone|call)\b", q):
         need.append(re.compile(r"\d"))
+    m = re.search(r"\bhow many (?:\w+ ){0,2}?([a-z]{4,})", q)
+    if m:                                    
+        noun = stem(m.group(1))
+        need.append(re.compile(rf"\b\d[\d,]*\s+(?:[\w-]+\s+){{0,1}}{re.escape(noun)}", re.I))
     return need
 
 
@@ -81,11 +85,22 @@ NEEDS_DIGITS = re.compile(r"\b(address|number|phone|call|hours?|when|how many|ho
                           r"date|branches|employees|percent)\b", re.I)
 
 
+def proper_nouns(question: str):
+    """Stems of capitalised words that are not the first word - the entity the question is about."""
+    toks = re.findall(r"[A-Za-z][A-Za-z'-]*", question)
+    out = set()
+    for i, w in enumerate(toks):
+        if i and w[0].isupper() and w.lower() not in ("dupaco", "i", "i'm", "ach", "atm"):
+            out.update(words(w))
+    return {w for w in out if w not in STOP}
+
+
 def score_chunks(idx: SnapshotIndex, groups, quals, question: str):
-    wts = [max((idx.idf.get(t, 0.0) for t in g), default=1.0) or 1.0 for g in groups]
+    wts = [(max((idx.idf.get(t, 0.0) for t in g), default=1.0) or 1.0) ** 2 for g in groups] 
     total = sum(wts) or 1.0
     qbis = bigrams(question)
     want_digits = bool(NEEDS_DIGITS.search(question))
+    caps = proper_nouns(question)
     scored = []
     for c in idx.chunks:
         cov = 0.0
@@ -96,15 +111,22 @@ def score_chunks(idx: SnapshotIndex, groups, quals, question: str):
         cov /= total
         if cov == 0:
             continue
-        s = cov + 0.30 * min(len(qbis & c.bis), 2) - 0.07 * math.log2(1 + len(c.toks) / 12)
+        s = cov + (0.25 if caps and caps <= c.toks else 0.0) + 0.30 * min(len(qbis & c.bis), 2) - 0.07 * math.log2(1 + len(c.toks) / 12)
         s += 0.15 * c.authority / 100 - (0.20 if c.carried else 0)
         if c.kind == "row":
             pos, neg = row_checks(c, quals)
             s += 0.25 * pos - 0.6 * neg
             if re.search(r"refinanc|equity", f"{c.heading} {c.label}", re.I) and not re.search(r"refi|equity|heloc", question, re.I):
                 s -= 0.12
-        elif want_digits and re.search(r"\d", c.text):
-            s += 0.15
+        else:
+            if want_digits and re.search(r"\d", c.text):
+                s += 0.15
+            if "Keep reading" in c.text:      
+                s -= 0.15
+            if c.text.startswith("DUBUQUE"):   
+                s += 0.06
+            if c.pub:                        
+                s += 0.03 * min(max((int(c.pub[:4]) * 12 + int(c.pub[5:7]) - 2022 * 12) / 58, 0.0), 1.0)
         scored.append((s, cov, c))
     scored.sort(key=lambda x: (-x[0], x[2].url, x[2].order))
     return scored, wts
@@ -193,7 +215,13 @@ def attempt(idx: SnapshotIndex, question: str):
     best_txt = next((x for x in scored if x[2].kind == "text" and eligible(x[2])), None)
 
     pick = None
-    if rate_q and best_row and best_row[1] >= ACCEPT:
+    if re.search(r"\bhow many\b", question.lower()) and best_txt:
+        near = [x for x in scored if x[2].kind == "text" and eligible(x[2]) and x[1] >= best_txt[1] - 0.1 and x[2].pub]
+        if near:
+            pick = max(near, key=lambda x: (x[2].pub, x[0]))
+    if pick:
+        pass
+    elif rate_q and best_row and best_row[1] >= ACCEPT:
         pick = best_row
     elif best_row and best_txt:
         pick = best_row if best_row[0] >= best_txt[0] and best_row[1] >= ACCEPT else (best_txt if best_txt[1] >= ACCEPT else None)
@@ -228,4 +256,8 @@ def attempt(idx: SnapshotIndex, question: str):
                     if r.url not in urls:
                         urls.append(r.url)
         return "\n".join(out[:10]), urls[:4], cov
-    return c.text[:480], [c.url], cov
+    text = c.text
+    nxt = idx.page_text.get(c.url, [])
+    if c.order + 1 < len(nxt) and len(text) + len(nxt[c.order + 1]) <= 760:
+        text = f"{text} {nxt[c.order + 1]}"          
+    return text[:760], [c.url], cov

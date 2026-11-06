@@ -5,16 +5,17 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(next(d / "harness" for d in HERE.parents if (d / "harness" / "contract.py").exists())))
-from contract import Answer, Conflict, Snapshot, Source  
-from engine import REFUSAL, attempt  
-from index import SnapshotIndex, row_chunk, text_chunks  
-from store import Store  
-
+from contract import Answer, Conflict, Snapshot, Source
+from conflicts import build_conflicts
+from engine import REFUSAL, attempt
+from index import SnapshotIndex, row_chunk, text_chunks
+from store import Store
 
 class KnowledgeSystem:
     def __init__(self):
         self.store = Store()
-        self.indexes = []        
+        self.indexes = []
+        self._conflicts = None
 
     def ingest(self, snapshot: Snapshot) -> None:
         self.store.add_snapshot(snapshot)
@@ -42,12 +43,13 @@ class KnowledgeSystem:
             if res:
                 text, urls, _ = res
                 return Answer(text=text, sources=[Source(url=u, snapshot_id=idx.snap_id) for u in urls])
-            break      
+            break
         return Answer(text=REFUSAL, confident=False)
 
     def conflicts(self):
-        return []
-
+        if self._conflicts is None:
+            self._conflicts = build_conflicts(self.indexes)
+        return self._conflicts
 
 def build():
     return KnowledgeSystem()
