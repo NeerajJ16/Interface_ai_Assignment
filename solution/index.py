@@ -1,16 +1,14 @@
-"""Chunk index + qualifier-aware retrieval.Every page of every snapshot is cut into chunks: one per table ROW (with its section heading,so tiers stay attached to their product) and one per text paragraph. A question is matched
-against the chunks of ONE snapshot (the newest, or the newest one on/before `as_of`).
-"""
+"""Chunk index + qualifier-aware retrieval."""
 from __future__ import annotations
+
 import math
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-#text normalisation
-_FOOT_PCT = re.compile(r"(\d%)\d\b")                  
-_FOOT_LBL = re.compile(r"\b(APR|APY)\d\b")            
-_FOOT_HDR = re.compile(r"(?<=[A-Za-z\)])\d$")         
+_FOOT_PCT = re.compile(r"(\d%)\d\b")
+_FOOT_LBL = re.compile(r"\b(APR|APY)\d\b")
+_FOOT_HDR = re.compile(r"(?<=[A-Za-z\)])\d$")
 
 def tidy(s: str) -> str:
     s = _FOOT_PCT.sub(r"\1", s)
@@ -28,9 +26,8 @@ it its this that these those of to in on at for from by with about as and or but
 how when where why there here have has had get give tell show want like need know please any some all just also
 than into over under per not no yes more most very much many current currently right now today latest new
 dupaco union rate rates apr apy interest dividend percent percentage yield annual offer offers offered
-available option options use used using up highest lowest best top maximum minimum provide between earn charge receive received""".split())
+available option options use used using up highest lowest best top maximum minimum provide between earn charge receive received their""".split())
 
-# query word -> acceptable chunk words
 SYN = {
     "mortgage": {"mortgage", "home", "purchase", "refinance"},
     "cd": {"certificate"}, "cds": {"certificate"}, "certificates": {"certificate"},
@@ -47,7 +44,7 @@ def stem(w: str) -> str:
     if w in STOP:
         return w
     if len(w) > 4 and re.search(r"(ch|sh|x|ss|z)es$", w):
-        return w[:-2]                                   
+        return w[:-2]
     for suf, rep in _Z:
         if len(w) > len(suf) + 3 and w.endswith(suf):
             return w[: -len(suf)] + rep
@@ -64,7 +61,6 @@ def bigrams(text: str) -> frozenset:
     w = [t for t in words(text) if t not in STOP]
     return frozenset(zip(w, w[1:]))
 
-#qualifiers
 _AMT = r"\$\s*([\d,]+(?:\.\d+)?)"
 RE_MONTHS = re.compile(r"(?<![\d.])(\d{1,3})\s*[- ]?\s*(?:months?|mos?)\b", re.I)
 RE_YEARS = re.compile(r"(?<![\d.])(\d{1,2})\s*[- ]?\s*(?:year|yr)\b", re.I)
@@ -113,7 +109,6 @@ def model_range(label: str):
     b = int(b) if len(b) == 4 else int(m.group(1)[:2] + b)
     return (min(a, b), max(a, b))
 
-#chunks
 RATE_HDR = re.compile(r"rate|apr|apy|yield|point|payment|min\.", re.I)
 
 MONTHS = {m: i for i, m in enumerate("January February March April May June July August September October November December".split(), 1)}
@@ -126,20 +121,20 @@ def pub_date(text: str) -> str:
 
 @dataclass
 class Chunk:
-    kind: str                 
+    kind: str
     url: str
-    snap: int                  
-    text: str                  
+    snap: int
+    text: str
     toks: frozenset
     authority: int
     carried: bool
-    table_id: str = ""         
+    table_id: str = ""
     heading: str = ""
-    label: str = ""            
-    metrics: str = ""          
+    label: str = ""
+    metrics: str = ""
     order: int = 0
     bis: frozenset = frozenset()
-    pub: str = ""               
+    pub: str = ""
 
 def row_chunk(pv, snap_i, t, ti, ri, row) -> Chunk:
     label_parts, metric_parts = [], []
@@ -162,10 +157,10 @@ def row_chunk(pv, snap_i, t, ti, ri, row) -> Chunk:
     toks = frozenset(words(blob))
     return Chunk("row", pv.url, snap_i, f"{label}: {metrics}" if metrics else label, toks,
                  pv.authority, pv.carried_forward, f"{pv.url}#{ti}", t.heading, label, metrics, ri,
-                 bigrams(f"{t.heading} {label} {hdrs}"))
-
+                 bigrams(t.heading) | bigrams(label) | bigrams(hdrs))
 
 def text_chunks(pv, snap_i):
+
     prose = "\n".join(l for l in pv.text.split("\n") if not l.lstrip().startswith("|"))
     out, order = [], 0
     pageword = pv.url.split("dupaco.com")[-1].replace("-", " ").replace("/", " ")
@@ -195,17 +190,73 @@ def text_chunks(pv, snap_i):
             order += 1
     return out
 
+TIER = re.compile(r"\$[\d,.]+(?:\s*[-\u2013]\s*\$?[\d,.]+)?\+?|or less")
+
+def fact_key(c, bands: dict, tier: bool = True):
+    """Identity of a fact row across pages and snapshots: product + program/tier + audience."""
+    base = re.sub(r"\baccounts?\b", "", c.heading, flags=re.I).strip()
+    label = c.label if tier else TIER.sub("", c.label)
+    if base:
+        label = re.sub(re.escape(base), "", label, flags=re.I)
+    m = RE_RANGE_YEARS.search(label)
+    if m:
+        label = label.replace(m.group(0), f"BAND{bands.get(m.group(0), 0)}")
+    alpha = len(re.findall(r"[A-Za-z]{3,}", label))
+    hk = re.sub(r"[^a-z]", "", base.lower()) if alpha <= 2 else ""
+    aud = "biz" if "/business" in c.url or "business" in c.heading.lower() else "per"
+    return (re.sub(r"[^a-z0-9]", "", label.lower()), hk, aud)
+
 def row_key(heading: str, label: str) -> str:
     """Identity of a fact row regardless of page: product + program/tier, punctuation-free."""
     return re.sub(r"[^a-z0-9]", "", f"{label}".lower())
+
+RE_HOURS = re.compile(r"\*\*Lobby\*\*(.*?)\*\*Drive-up\*\*(.*?)(?=\*\*ABOUT|\Z)", re.S | re.I)
+RE_BRANCH_NAME = re.compile(r"(?:[Tt]he|for the)\s+((?:[A-Z][\w.']*\s+){0,3}?(?:Learning Lab|learning lab|branch))")
+RE_ADDR = re.compile(r"^\d+\s.+,\s*[A-Z]{2},\s*\d{5}$")
+
+def _schedule(block: str) -> str:
+    rows = [re.sub(r"\s+", " ", l).strip(" *|") for l in block.split("\n")]
+    return "; ".join(r for r in rows if r and not r.lower().startswith(("branch hours", "**")))
+
+def hours_blocks(pv):
+    """Lobby / drive-up schedules announced for a branch, with the branch they belong to."""
+    out = []
+    for m in RE_HOURS.finditer(pv.text):
+        before = pv.text[max(0, m.start() - 700): m.start()]
+        names = RE_BRANCH_NAME.findall(before)
+        branch = re.sub(r"\s+branch$", "", names[-1].strip(), flags=re.I) if names else pv.title
+        if branch.lower().endswith("learning lab"):
+            branch = pv.title
+        for kind, block in (("Lobby", m.group(1)), ("Drive-up", m.group(2))):
+            sched = _schedule(block)
+            if sched:
+                out.append((kind, branch, sched, pub_date(pv.text), pv.url))
+    return out
+
+def location_chunks(pv, snap_i):
+    """One fact per locator entry on a page listing branches / ATMs with street addresses."""
+    out = []
+    for block in re.split(r"\n###\s+", pv.text)[1:]:
+        lines = [l.strip() for l in block.split("\n") if l.strip()]
+        addr = next((l for l in lines[1:4] if RE_ADDR.match(l)), None)
+        if not addr:
+            continue
+        kind = lines[1] if lines[1] != addr else "Location"
+        services = next((l for l in lines if "·" in l), "")
+        text = f"{lines[0]} - {kind} address: {addr}." + (f" Services: {services}." if services else "")
+        out.append(Chunk("text", pv.url, snap_i, text, frozenset(words(f"{text} {pv.title}")), pv.authority,
+                         pv.carried_forward, order=10000 + len(out), bis=bigrams(text)))
+    return out
 
 class SnapshotIndex:
     def __init__(self, snap_id, taken_on):
         self.snap_id, self.taken_on = snap_id, taken_on
         self.chunks = []
-        self.tables = defaultdict(list)     
-        self.same_row = defaultdict(list)   
-        self.page_text = defaultdict(list)  
+        self.tables = defaultdict(list)
+        self.bands = {}
+        self.same_row = defaultdict(list)
+        self.page_text = defaultdict(list)
+        self.hours = []
         self.idf = {}
 
     def finalize(self):
@@ -216,8 +267,13 @@ class SnapshotIndex:
         n = max(len(self.chunks), 1)
         self.idf = {t: math.log(1 + n / d) for t, d in df.items()}
         for c in self.chunks:
+            m = c.kind == "row" and RE_RANGE_YEARS.search(c.label)
+            if m:
+                b = self.bands.setdefault(c.table_id, {})
+                b.setdefault(m.group(0), len(b))
+        for c in self.chunks:
             if c.kind == "text":
                 self.page_text[c.url].append(c.text)
             if c.kind == "row":
                 self.tables[c.table_id].append(c)
-                self.same_row[row_key(c.heading, c.label)].append(c)
+                self.same_row[fact_key(c, self.bands.get(c.table_id, {}))].append(c)

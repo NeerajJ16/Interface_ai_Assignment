@@ -22,6 +22,9 @@ for d in sorted((ROOT / "snapshots").glob("0*/")):
 args = sys.argv[1:]
 find = None
 page = None
+rows = None
+if "--rows" in args:
+    i = args.index("--rows"); rows = args[i + 1]; del args[i:i + 2]
 if "--page" in args:
     i = args.index("--page"); page = args[i + 1]; del args[i:i + 2]
 if "--find" in args:
@@ -39,6 +42,11 @@ if find:
     for rank, (s_, cov, c) in enumerate(scored):
         if find.lower() in c.text.lower():
             print(f"rank {rank} score={s_:.2f} cov={cov:.2f} auth={c.authority} pub={c.pub or '-'} toks={len(c.toks)} {c.url.split('.com')[-1][:55]}")
+if rows:
+    print(f"--- table rows whose heading contains {rows!r}:")
+    for rank, (s_, cov, c) in enumerate(scored):
+        if c.kind == "row" and rows.lower() in c.heading.lower():
+            print(f"rank {rank} score={s_:.2f} cov={cov:.2f} auth={c.authority} {c.url.split('.com')[-1][:28]} | {c.label[:36]} | {c.metrics[:34]} | toks={len(c.toks)}")
 if page:
     for url, chunks in idx.page_text.items():
         if page in url:

@@ -7,8 +7,8 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(next(d / "harness" for d in HERE.parents if (d / "harness" / "contract.py").exists())))
 from contract import Answer, Conflict, Snapshot, Source
 from conflicts import build_conflicts
-from engine import REFUSAL, attempt
-from index import SnapshotIndex, row_chunk, text_chunks
+from engine import REFUSAL, attempt, hours_answer
+from index import SnapshotIndex, hours_blocks, location_chunks, row_chunk, text_chunks
 from store import Store
 
 class KnowledgeSystem:
@@ -26,6 +26,8 @@ class KnowledgeSystem:
             if pv.snapshot_id != snapshot.snapshot_id:
                 continue
             idx.chunks.extend(text_chunks(pv, si))
+            idx.chunks.extend(location_chunks(pv, si))
+            idx.hours.extend(hours_blocks(pv))
             for ti, t in enumerate(pv.tables):
                 for ri, row in enumerate(t.rows):
                     idx.chunks.append(row_chunk(pv, si, t, ti, ri, row))
@@ -39,9 +41,9 @@ class KnowledgeSystem:
 
     def answer(self, question, as_of=None):
         for idx in self._targets(as_of):
-            res = attempt(idx, question)
+            res = hours_answer(idx, question) or attempt(idx, question)
             if res:
-                text, urls, _ = res
+                text, urls = res[0], res[1]
                 return Answer(text=text, sources=[Source(url=u, snapshot_id=idx.snap_id) for u in urls])
             break
         return Answer(text=REFUSAL, confident=False)

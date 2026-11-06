@@ -5,16 +5,15 @@ import math
 import re
 from collections import OrderedDict
 
-from index import (row_key, RE_MODEL, RE_MONTHS, RE_YEARS, STOP, SYN, Chunk, SnapshotIndex, bigrams, model_range,
+from index import (fact_key, RE_MODEL, RE_MONTHS, RE_YEARS, STOP, SYN, Chunk, SnapshotIndex, bigrams, model_range,
                     parse_quals, stem, tier_of, words)
 
-RATE_WORDS = re.compile(r"\b(rates?|apr|apy|interest|dividends?|percent|percentage)\b", re.I)
+RATE_WORDS = re.compile(r"\b(rates?|aprs?|apys?|interest|dividends?|percent|percentage)\b", re.I)
 RE_ROW_MONTHS = re.compile(r"(?<![\d.])(\d{1,3})\s*[- ]?\s*(?:months?|mos?)\b", re.I)
 RE_ROW_YEARS = re.compile(r"(?<![\d.])(\d{1,2})\s*[- ]?\s*(?:year|yr)\b", re.I)
-ACCEPT = 0.50            
+ACCEPT = 0.50
 REFUSAL = ("I don't know - that isn't listed on the Dupaco website. "
            "Please contact Dupaco directly or visit a branch for help.")
-
 
 def query_groups(question: str):
     """Distinctive question words (qualifier numbers removed), each as a set of acceptable stems."""
@@ -23,13 +22,17 @@ def query_groups(question: str):
     q = RE_MODEL.sub(" ", q)
     q = re.sub(r"\$\s*[\d,.]+", " ", q)
     groups, seen = [], set()
-    for w in words(q):
+    ws = words(q)
+    for w in ws:
+        if w == "credit" and "card" in ws:
+            continue
+        if len(w) < 2:
+            continue
         if w in STOP or w in seen or w.isdigit():
             continue
         seen.add(w)
         groups.append(set(SYN.get(w, set())) | {w})
     return groups
-
 
 def row_checks(c: Chunk, quals):
     """(matches, mismatches) of a row against the question's qualifiers."""
@@ -54,11 +57,9 @@ def row_checks(c: Chunk, quals):
             pos, neg = (pos + 1, neg) if t[0] <= a <= t[1] else (pos, neg + 1)
     return pos, neg
 
-
 TIME = re.compile(r"\d{1,2}(?::\d{2})?\s*(?:a\.?m|p\.?m)\b|\bnoon\b", re.I)
 STREET = re.compile(r"\d+\s+[A-Za-z0-9. ]+?\b(?:ln|lane|st|street|ave|avenue|rd|road|blvd|dr|drive|hwy|way|pkwy|ct|court)\b", re.I)
 URLISH = re.compile(r"https?://|dupaco\.com", re.I)
-
 
 def required_evidence(question: str):
     """Regexes a chunk must match to be able to answer this kind of question."""
@@ -75,28 +76,25 @@ def required_evidence(question: str):
     if re.search(r"\b(routing|phone|call)\b", q):
         need.append(re.compile(r"\d"))
     m = re.search(r"\bhow many (?:\w+ ){0,2}?([a-z]{4,})", q)
-    if m:                                    
+    if m:
         noun = stem(m.group(1))
         need.append(re.compile(rf"\b\d[\d,]*\s+(?:[\w-]+\s+){{0,1}}{re.escape(noun)}", re.I))
     return need
 
-
 NEEDS_DIGITS = re.compile(r"\b(address|number|phone|call|hours?|when|how many|how much|zip|routing|open|close|"
                           r"date|branches|employees|percent)\b", re.I)
 
-
 def proper_nouns(question: str):
     """Stems of capitalised words that are not the first word - the entity the question is about."""
-    toks = re.findall(r"[A-Za-z][A-Za-z'-]*", question)
+    toks = re.findall(r"[A-Za-z][A-Za-z-]*", question)
     out = set()
     for i, w in enumerate(toks):
         if i and w[0].isupper() and w.lower() not in ("dupaco", "i", "i'm", "ach", "atm"):
             out.update(words(w))
     return {w for w in out if w not in STOP}
 
-
 def score_chunks(idx: SnapshotIndex, groups, quals, question: str):
-    wts = [(max((idx.idf.get(t, 0.0) for t in g), default=1.0) or 1.0) ** 2 for g in groups] 
+    wts = [(max((idx.idf.get(t, 0.0) for t in g), default=1.0) or 1.0) ** 2 for g in groups]
     total = sum(wts) or 1.0
     qbis = bigrams(question)
     want_digits = bool(NEEDS_DIGITS.search(question))
@@ -121,16 +119,15 @@ def score_chunks(idx: SnapshotIndex, groups, quals, question: str):
         else:
             if want_digits and re.search(r"\d", c.text):
                 s += 0.15
-            if "Keep reading" in c.text:      
+            if "Keep reading" in c.text:
                 s -= 0.15
-            if c.text.startswith("DUBUQUE"):   
+            if c.text.startswith("DUBUQUE"):
                 s += 0.06
-            if c.pub:                        
+            if c.pub:
                 s += 0.03 * min(max((int(c.pub[:4]) * 12 + int(c.pub[5:7]) - 2022 * 12) / 58, 0.0), 1.0)
         scored.append((s, cov, c))
     scored.sort(key=lambda x: (-x[0], x[2].url, x[2].order))
     return scored, wts
-
 
 def tidy_ladders(rows):
     """For 'X or less' loan-amount ladders keep the smallest (headline) and largest tier per program."""
@@ -145,7 +142,6 @@ def tidy_ladders(rows):
         for c in cs[1:-1]:
             drop.add(id(c))
     return [c for c in rows if id(c) not in drop]
-
 
 def select_rows(rows, quals):
     """Narrow a table to the rows the question's qualifiers point at."""
@@ -176,12 +172,10 @@ def select_rows(rows, quals):
         rows = tidy_ladders(rows)
     return rows
 
-
 def arbitrate(idx: SnapshotIndex, c: Chunk) -> Chunk:
     """Same fact on several pages: the most authoritative, freshest page supplies the value."""
-    peers = idx.same_row.get(row_key(c.heading, c.label), [c])
+    peers = idx.same_row.get(fact_key(c, idx.bands.get(c.table_id, {})), [c])
     return max(peers, key=lambda p: (p.authority, not p.carried, p.url))
-
 
 def render_row(c: Chunk) -> str:
     label = c.label
@@ -189,6 +183,34 @@ def render_row(c: Chunk) -> str:
         label = f"{c.heading} - {label}"
     return f"{label}: {c.metrics}" if c.metrics else label
 
+RATE_CLAIM = re.compile(r"(?:rate|apr|apy|interest|dividend)[^.]{0,60}\d\s*%|\d\s*%[^.]{0,40}(?:rate|apr|apy|interest|dividend)", re.I)
+HOURS_Q = re.compile(r"\b(hours?|lobby|drive[- ]?up)\b", re.I)
+
+def _dash(text: str) -> str:
+    return text.replace("\u2013", "-").replace("\u2014", "-")
+
+def hours_answer(idx: SnapshotIndex, question: str):
+    """Branch hours from announced schedules: summarise the variety, or answer for one named branch."""
+    if not HOURS_Q.search(question) or not idx.hours:
+        return None
+    want = "Drive-up" if re.search(r"drive[- ]?up", question, re.I) else "Lobby"
+    named = proper_nouns(question) - {"lobby", "drive", "up", "hour", "dupaco"}
+    blocks = [b for b in idx.hours if b[0] == want]
+    if named:
+        blocks = [b for b in blocks if named <= set(words(f"{b[1]} {b[4]}"))]
+        if not blocks:
+            return None
+        kind, branch, sched, pub, url = max(blocks, key=lambda b: b[3])
+        return f"{want} hours at {branch}: {_dash(sched)}", [url]
+    groups = {}
+    for kind, branch, sched, pub, url in blocks:
+        g = groups.setdefault(_dash(sched), {"n": 0, "branch": branch, "url": url})
+        g["n"] += 1
+    top = sorted(groups.items(), key=lambda kv: (-kv[1]["n"], kv[0]))[:4]
+    lines = [f"{want} hours vary by branch. Typical schedules:"]
+    lines += [f"- {sched} (for example {g['branch']})" for sched, g in top]
+    lines.append("Tell me which branch you mean and I can narrow it down.")
+    return "\n".join(lines), [g["url"] for _, g in top][:3]
 
 def attempt(idx: SnapshotIndex, question: str):
     groups = query_groups(question)
@@ -201,13 +223,16 @@ def attempt(idx: SnapshotIndex, question: str):
         return None
 
     need = required_evidence(question)
+    literals = re.findall(r"\b\d+/\d+\b", question)
 
     def eligible(c):
         if c.kind == "row":
             if rate_q:
                 return bool(c.metrics)
             return all(r.search(f"{c.label} {c.metrics}") for r in need) if need else bool(c.metrics) or True
-        if rate_q and "%" not in c.text:
+        if rate_q and not RATE_CLAIM.search(c.text):
+            return False
+        if any(lit not in c.text for lit in literals):
             return False
         return all(r.search(c.text) for r in need)
 
@@ -216,6 +241,7 @@ def attempt(idx: SnapshotIndex, question: str):
 
     pick = None
     if re.search(r"\bhow many\b", question.lower()) and best_txt:
+
         near = [x for x in scored if x[2].kind == "text" and eligible(x[2]) and x[1] >= best_txt[1] - 0.1 and x[2].pub]
         if near:
             pick = max(near, key=lambda x: (x[2].pub, x[0]))
@@ -234,11 +260,17 @@ def attempt(idx: SnapshotIndex, question: str):
 
     top, cov, c = pick
     if c.kind == "row":
+
         tables, seen = [c], {c.table_id}
-        for sc, _, r in scored:
-            if sc < top - 0.08 or len(tables) >= 4:
+        plain = not any((quals.months, quals.years, quals.model, quals.amounts))
+        for sc, rcov, r in scored:
+            if len(tables) >= 4 or sc < top - 0.25:
                 break
-            if r.kind == "row" and eligible(r) and r.table_id not in seen and not any((quals.months, quals.years, quals.model, quals.amounts)):
+            if r.kind != "row" or not eligible(r) or r.table_id in seen or not plain:
+                continue
+            near = sc >= top - 0.08
+            tie = r.url == c.url and rcov >= cov - 0.001 and not re.search(r"refinanc|equity", f"{r.heading} {r.label}", re.I)
+            if near or tie:
                 seen.add(r.table_id)
                 tables.append(r)
         out, urls, shown = [], [], set()
@@ -249,8 +281,8 @@ def attempt(idx: SnapshotIndex, question: str):
                 if line not in shown:
                     shown.add(line)
                     out.append(line)
-                    # cite every official page that carries this exact value
-                    for peer in sorted(idx.same_row.get(row_key(r.heading, r.label), [r]), key=lambda p: -p.authority):
+
+                    for peer in sorted(idx.same_row.get(fact_key(r, idx.bands.get(r.table_id, {})), [r]), key=lambda p: -p.authority):
                         if peer.metrics == r.metrics and peer.authority >= 80 and not peer.carried and peer.url not in urls:
                             urls.append(peer.url)
                     if r.url not in urls:
@@ -259,5 +291,5 @@ def attempt(idx: SnapshotIndex, question: str):
     text = c.text
     nxt = idx.page_text.get(c.url, [])
     if c.order + 1 < len(nxt) and len(text) + len(nxt[c.order + 1]) <= 760:
-        text = f"{text} {nxt[c.order + 1]}"          
+        text = f"{text} {nxt[c.order + 1]}"
     return text[:760], [c.url], cov

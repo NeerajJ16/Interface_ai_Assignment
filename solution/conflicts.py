@@ -5,10 +5,9 @@ import re
 from collections import OrderedDict, defaultdict
 
 from contract import Conflict, Source
-from index import RE_RANGE_YEARS
+from index import TIER, fact_key
 
 PCT = re.compile(r"(\d+(?:\.\d+)?)\s*%")
-TIER = re.compile(r"\$[\d,.]+(?:\s*[-–]\s*\$?[\d,.]+)?\+?|or less")
 BRANCH_CLAIM = re.compile(r"\b(\d{2})\s+branch office locations", re.I)
 
 def _nums(metrics: str):
@@ -17,41 +16,19 @@ def _nums(metrics: str):
         out.setdefault(round(float(m.group(1)), 4), m.group(0).replace(" ", ""))
     return out
 
-_BAND = {}
-
-def _band_label(c, label: str) -> str:
-    """'2023-26 Model Year' and '2024-27 Model Year' are the same slot after the yearly roll:"""
-    m = RE_RANGE_YEARS.search(label)
-    if not m:
-        return label
-    bands = _BAND.get((c.snap, c.table_id), {})
-    return label.replace(m.group(0), f"BAND{bands.get(m.group(0), 0)}")
+_INDEXES = []
 
 def _audience(c) -> str:
     return "biz" if "/business" in c.url or "business" in c.heading.lower() else "per"
 
 def _fact_key(c, tier: bool = True):
-    base = re.sub(r"\baccounts?\b", "", c.heading, flags=re.I).strip()
-    label = c.label if tier else TIER.sub("", c.label)
-    if base:
-        label = re.sub(re.escape(base), "", label, flags=re.I)
-    label = _band_label(c, label)
-    alpha = len(re.findall(r"[A-Za-z]{3,}", label))
-    hk = re.sub(r"[^a-z]", "", base.lower()) if alpha <= 2 else ""
-    return (re.sub(r"[^a-z0-9]", "", label.lower()), hk, _audience(c))
-
+    return fact_key(c, _INDEXES[c.snap].bands.get(c.table_id, {}), tier)
 
 def _best(obs):
     return max(obs, key=lambda o: (o[1].authority, not o[1].carried, o[1].url))
 
 def row_conflicts(indexes):
-    _BAND.clear()
-    for idx in indexes:
-        for c in idx.chunks:
-            m = c.kind == "row" and RE_RANGE_YEARS.search(c.label)
-            if m:
-                bands = _BAND.setdefault((c.snap, c.table_id), {})
-                bands.setdefault(m.group(0), len(bands))
+    _INDEXES[:] = indexes
     obs = defaultdict(list)
     for i, idx in enumerate(indexes):
         for c in idx.chunks:
