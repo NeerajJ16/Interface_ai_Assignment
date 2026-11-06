@@ -8,6 +8,7 @@ sys.path.insert(0, str(next(d / "harness" for d in HERE.parents if (d / "harness
 from contract import Answer, Conflict, Snapshot, Source
 from conflicts import build_conflicts
 from engine import REFUSAL, attempt, hours_answer
+from routes import contact_answer, eligibility_answer, link_answer
 from index import SnapshotIndex, hours_blocks, location_chunks, row_chunk, text_chunks
 from store import Store
 
@@ -25,6 +26,7 @@ class KnowledgeSystem:
             pv = versions[-1]
             if pv.snapshot_id != snapshot.snapshot_id:
                 continue
+            idx.titles[url] = pv.title
             idx.chunks.extend(text_chunks(pv, si))
             idx.chunks.extend(location_chunks(pv, si))
             idx.hours.extend(hours_blocks(pv))
@@ -41,7 +43,7 @@ class KnowledgeSystem:
 
     def answer(self, question, as_of=None):
         for idx in self._targets(as_of):
-            res = hours_answer(idx, question) or attempt(idx, question)
+            res = hours_answer(idx, question) or link_answer(idx, question) or contact_answer(idx, question) or eligibility_answer(idx, question) or attempt(idx, question)
             if res:
                 text, urls = res[0], res[1]
                 return Answer(text=text, sources=[Source(url=u, snapshot_id=idx.snap_id) for u in urls])

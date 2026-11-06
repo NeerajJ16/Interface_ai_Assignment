@@ -24,7 +24,7 @@ _WORD = re.compile(r"[a-z0-9]+(?:[.,][0-9]+)*")
 STOP = set("""a an the is are was were be been do does did can could would should will you your yours i me my we our us
 it its this that these those of to in on at for from by with about as and or but if then so what whats which who whom
 how when where why there here have has had get give tell show want like need know please any some all just also
-than into over under per not no yes more most very much many current currently right now today latest new
+than into over under going per not no yes more most very much many current currently right now today latest new
 dupaco union rate rates apr apy interest dividend percent percentage yield annual offer offers offered
 available option options use used using up highest lowest best top maximum minimum provide between earn charge receive received their""".split())
 
@@ -35,6 +35,7 @@ SYN = {
     "boat": {"boat", "rv"}, "rv": {"boat", "rv"},
     "card": {"card", "visa"}, "cards": {"card", "visa"},
     "wallet": {"wallet", "apple", "google", "samsung"},
+    "flexibility": {"flexibility", "flexible"}, "university": {"university", "college", "school", "tuition"},
     "lobby": {"lobby"}, "hours": {"hours", "hour"},
 }
 
@@ -260,6 +261,7 @@ class SnapshotIndex:
         self.same_row = defaultdict(list)
         self.page_text = defaultdict(list)
         self.hours = []
+        self.titles = {}
         self.idf = {}
 
     def finalize(self):

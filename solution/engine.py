@@ -78,9 +78,10 @@ def required_evidence(question: str):
     m = re.search(r"\bhow many (?:\w+ ){0,2}?([a-z]{4,})", q)
     if m:
         noun = stem(m.group(1))
-        need.append(re.compile(rf"\b\d[\d,]*\s+(?:[\w-]+\s+){{0,1}}{re.escape(noun)}", re.I))
+        need.append(re.compile(rf"(?<![\d,.])(?!(?:19|20)\d\d\b)\d[\d,]*(?<!,)\s+(?:[\w-]+\s+){{0,1}}{re.escape(noun)}", re.I))
     return need
 
+DEFN = re.compile(r"\b(provides?|offers?|gives?|helps?|allows?|lets)\b[^.]{0,60}\$[\d,]+", re.I)
 NEEDS_DIGITS = re.compile(r"\b(address|number|phone|call|hours?|when|how many|how much|zip|routing|open|close|"
                           r"date|branches|employees|percent)\b", re.I)
 
@@ -99,6 +100,8 @@ def score_chunks(idx: SnapshotIndex, groups, quals, question: str):
     qbis = bigrams(question)
     want_digits = bool(NEEDS_DIGITS.search(question))
     caps = proper_nouns(question)
+    recog = bool(re.search(r"\b(recogni\w+|awards?|ranked|named|honou?rs?)\b", question, re.I))
+    defn = bool(re.match(r"\s*what (?:is|are)\b", question, re.I))
     scored = []
     for c in idx.chunks:
         cov = 0.0
@@ -121,10 +124,14 @@ def score_chunks(idx: SnapshotIndex, groups, quals, question: str):
                 s += 0.15
             if "Keep reading" in c.text:
                 s -= 0.15
+            if c.text.rstrip().endswith(("...", "\u2026")):
+                s -= 0.12
+            if defn and DEFN.search(c.text):
+                s += 0.10
             if c.text.startswith("DUBUQUE"):
                 s += 0.06
             if c.pub:
-                s += 0.03 * min(max((int(c.pub[:4]) * 12 + int(c.pub[5:7]) - 2022 * 12) / 58, 0.0), 1.0)
+                s += (0.30 if recog else 0.03) * min(max((int(c.pub[:4]) * 12 + int(c.pub[5:7]) - 2022 * 12) / 58, 0.0), 1.0)
         scored.append((s, cov, c))
     scored.sort(key=lambda x: (-x[0], x[2].url, x[2].order))
     return scored, wts
@@ -183,7 +190,7 @@ def render_row(c: Chunk) -> str:
         label = f"{c.heading} - {label}"
     return f"{label}: {c.metrics}" if c.metrics else label
 
-RATE_CLAIM = re.compile(r"(?:rate|apr|apy|interest|dividend)[^.]{0,60}\d\s*%|\d\s*%[^.]{0,40}(?:rate|apr|apy|interest|dividend)", re.I)
+RATE_CLAIM = re.compile(r"(?:\b(?:rates?|apr|apy|dividend)\b|interest rate)\s*(?:of|is|are|as low as|from|starting at|:)?\s*(?:\w+\s+){0,2}\d+(?:\.\d+)?\s*%|\d+(?:\.\d+)?\s*%\s*(?:apr|apy|interest|dividend|rate)", re.I)
 HOURS_Q = re.compile(r"\b(hours?|lobby|drive[- ]?up)\b", re.I)
 
 def _dash(text: str) -> str:
@@ -210,7 +217,8 @@ def hours_answer(idx: SnapshotIndex, question: str):
     lines = [f"{want} hours vary by branch. Typical schedules:"]
     lines += [f"- {sched} (for example {g['branch']})" for sched, g in top]
     lines.append("Tell me which branch you mean and I can narrow it down.")
-    return "\n".join(lines), [g["url"] for _, g in top][:3]
+    urls = [u for u in idx.page_text if u.rstrip("/").endswith("/contact")][:1] + [g["url"] for _, g in top]
+    return "\n".join(lines), urls[:3]
 
 def attempt(idx: SnapshotIndex, question: str):
     groups = query_groups(question)
@@ -289,7 +297,17 @@ def attempt(idx: SnapshotIndex, question: str):
                         urls.append(r.url)
         return "\n".join(out[:10]), urls[:4], cov
     text = c.text
+    own = set(words(text))
+    title = re.sub(r"\s*\|.*$", "", idx.titles.get(c.url, "")).strip()
+    if title and any(not (g & own) for g in groups) and title.lower() not in text.lower():
+        text = f"{title}: {text}"
     nxt = idx.page_text.get(c.url, [])
     if c.order + 1 < len(nxt) and len(text) + len(nxt[c.order + 1]) <= 760:
         text = f"{text} {nxt[c.order + 1]}"
-    return text[:760], [c.url], cov
+    urls = [c.url]
+    nums = re.findall(r"(?<![\d,.])\d{7,}(?![\d,.])", text)
+    if nums:
+        for o in idx.chunks:
+            if o.kind == "text" and o.authority >= 70 and nums[0] in o.text and o.url not in urls:
+                urls.append(o.url)
+    return text[:760], urls[:3], cov
